@@ -7,7 +7,11 @@
     "ios": "react-native run-ios",
     "lint": "eslint .",
     "start": "react-native start",
-    "test": "jest"
+    "test": "jest",
+    "clean-app": "yarn clean-npm && yarn clean-gradlew && yarn clean-pod && watchman watch-del-all",
+    "clean-npm": "rm -rf node_modules/ && yarn install",
+    "clean-pod": "cd ios && rm -rf Podfile.lock && RCT_NEW_ARCH_ENABLED=0 pod install && cd ..",
+    "clean-gradlew": "rm -rf android/app/.cxx && cd android && ./gradlew clean && rm -rf ~/.gradle && rm -rf ~/.gradle/caches/* && cd .."
   },
   "dependencies": {
     "react": "18.3.1",

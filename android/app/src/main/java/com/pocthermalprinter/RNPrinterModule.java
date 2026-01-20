@@ -1,11 +1,14 @@
 package com.pocthermalprinter;
 
+import android.Manifest;
 import android.graphics.Bitmap;
 import android.graphics.Matrix;
 import android.graphics.BitmapFactory;
 
 
 import androidx.annotation.NonNull;
+import androidx.annotation.RequiresPermission;
+
 import com.caysn.autoreplyprint.AutoReplyPrint;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
@@ -21,10 +24,21 @@ import com.sun.jna.ptr.IntByReference;
 
 import java.util.HashMap;
 import java.util.Map;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import android.util.Log;
+import android.bluetooth.BluetoothSocket;
+import java.io.OutputStream;
+import java.util.UUID;
 
 public class RNPrinterModule extends ReactContextBaseJavaModule {
 
     private Pointer handle = Pointer.NULL;
+    private BluetoothSocket btSocket = null;
+    private OutputStream btOut = null;
+
+    private static final UUID SPP_UUID =
+            UUID.fromString("00001101-0000-1000-8000-00805f9b34fb");
 
     public RNPrinterModule(@NonNull ReactApplicationContext reactContext) {
         super(reactContext);
@@ -36,33 +50,131 @@ public class RNPrinterModule extends ReactContextBaseJavaModule {
         return "RNPrinterModule";
     }
 
-    // @ReactMethod
-    // public void scanBtDevices(Promise promise) {
-    // new Thread(() -> {
-    // Set<String> devices = new HashSet<>();
-    // IntByReference cancel = new IntByReference(0);
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    @ReactMethod
+    public void scanBtClassicDevices(Promise promise) {
+        new Thread(() -> {
+            try {
+                BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+                if (adapter == null) {
+                    promise.reject("BT_NOT_SUPPORTED", "Bluetooth not supported");
+                    return;
+                }
 
-    // AutoReplyPrint.CP_OnBluetoothDeviceDiscovered_Callback callback =
-    // new AutoReplyPrint.CP_OnBluetoothDeviceDiscovered_Callback() {
-    // @Override
-    // public void CP_OnBluetoothDeviceDiscovered(
-    // String device_name,
-    // String device_address,
-    // Pointer private_data
-    // ) {
-    // devices.add(device_address);
-    // }
-    // };
+                WritableArray arr = new WritableNativeArray();
 
-    // AutoReplyPrint.INSTANCE.CP_Port_EnumBtDevice(12000, cancel, callback, null);
+                for (BluetoothDevice d : adapter.getBondedDevices()) {
+                    WritableMap map = new WritableNativeMap();
+                    map.putString("name", d.getName());
+                    map.putString("address", d.getAddress());
+                    arr.pushMap(map);
+                }
 
-    // WritableArray arr = new WritableNativeArray();
-    // for (String addr : devices) {
-    // arr.pushString(addr);
-    // }
-    // promise.resolve(arr);
-    // }).start();
-    // }
+                promise.resolve(arr);
+            } catch (Exception e) {
+                promise.reject("BT_BONDED_SCAN_ERROR", e.getMessage(), e);
+            }
+        }).start();
+    }
+
+
+    @RequiresPermission(allOf = {Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT})
+    @ReactMethod
+    public void connectBtClassicDevice(String macAddress, Promise promise) {
+        new Thread(() -> {
+            try {
+                BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+                if (adapter == null) {
+                    promise.reject("BT_NOT_SUPPORTED", "Bluetooth not supported");
+                    return;
+                }
+
+                if (adapter.isDiscovering()) {
+                    adapter.cancelDiscovery();
+                    try { Thread.sleep(300); } catch (Exception ignored) {}
+                }
+
+                // ปิดของเก่าก่อน
+                try {
+                    if (btOut != null) btOut.close();
+                } catch (Exception ignored) {}
+                try {
+                    if (btSocket != null) btSocket.close();
+                } catch (Exception ignored) {}
+                btOut = null;
+                btSocket = null;
+
+                BluetoothDevice device = adapter.getRemoteDevice(macAddress);
+
+                // ✅ ใช้ SPP UUID มาตรฐาน
+                btSocket = device.createRfcommSocketToServiceRecord(SPP_UUID);
+
+                btSocket.connect();
+                btOut = btSocket.getOutputStream();
+
+                promise.resolve("SUCCESS_SOCKET");
+
+            } catch (Exception e) {
+                promise.reject("BT_CONNECT_ERROR", e.getMessage(), e);
+            }
+        }).start();
+    }
+
+    @ReactMethod
+    public void disconnectBtClassicDevice(Promise promise) {
+        new Thread(() -> {
+            try {
+                if (btOut != null) {
+                    btOut.close();
+                    btOut = null;
+                }
+                if (btSocket != null) {
+                    btSocket.close();
+                    btSocket = null;
+                }
+
+                promise.resolve("Disconnected");
+            } catch (Exception e) {
+                promise.reject("BT_DISCONNECT_ERROR", e.getMessage(), e);
+            }
+        }).start();
+    }
+
+
+    @ReactMethod
+    public void testPrintByBtClassic(Promise promise) {
+        new Thread(() -> {
+            try {
+                if (btOut == null) {
+                    promise.reject("PRINT_FAILED", "No BT Classic socket connected");
+                    return;
+                }
+
+                // ESC/POS: initialize printer
+                btOut.write(new byte[]{0x1B, 0x40});
+
+                // Print text
+                btOut.write("HELLO BT CLASSIC SPP \n".getBytes("UTF-8"));
+                btOut.write("581PW3582 TEST PRINT\n\n".getBytes("UTF-8"));
+
+                // Feed + cut (บางรุ่นไม่รองรับ cut)
+                btOut.write(new byte[]{0x1D, 0x56, 0x41, 0x10}); // cut partial
+                btOut.flush();
+
+                promise.resolve("PRINT_SUCCESS_SOCKET");
+
+            } catch (Exception e) {
+                promise.reject("PRINT_ERROR", e.getMessage(), e);
+            }
+        }).start();
+    }
+
+
+
+
+// ---------------------------------------------------------------------------------------------------------------- //
+
+
 
     @ReactMethod
     public void scanBleDevice(Promise promise) {

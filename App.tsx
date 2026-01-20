@@ -42,13 +42,23 @@ const TestCommandList: React.FC<{
 
   const testPrint = async () => {
     setLoading(true);
+    // try {
+    //   await RNPrinterModule.testPrintSampleTicket();
+    //   Alert.alert('Print Success', 'Test print completed.');
+    // } catch (e) {
+    //   console.error(e);
+    //   Alert.alert('Print Failed', 'Could not complete test print.');
+    // }
+
     try {
-      await RNPrinterModule.testPrintSampleTicket();
+      await RNPrinterModule.testPrintByBtClassic();
       Alert.alert('Print Success', 'Test print completed.');
     } catch (e) {
       console.error(e);
       Alert.alert('Print Failed', 'Could not complete test print.');
     }
+
+
     setLoading(false);
   };
 
@@ -203,17 +213,31 @@ export default function App() {
     setLoading(true);
     setIsScanning(true);
     setDevices([]);
+    // try {
+    //   const found: BleDevice[] = await RNPrinterModule.scanBleDevice();
+    //   console.log('found', found)
+    //   setDevices(found);
+    // } catch (e) {
+    //   console.error('Scan failed', e);
+    //   Alert.alert(
+    //     'Scan Failed',
+    //     'Could not scan for BLE devices. Check permissions.',
+    //   );
+    // }
+
     try {
-      const found: BleDevice[] = await RNPrinterModule.scanBleDevice();
+      const found: any = await RNPrinterModule.scanBtClassicDevices();
       console.log('found', found)
       setDevices(found);
     } catch (e) {
       console.error('Scan failed', e);
       Alert.alert(
         'Scan Failed',
-        'Could not scan for BLE devices. Check permissions.',
+        'Could not scan for Bluetooth devices. Check permissions.',
       );
     }
+
+
     setLoading(false);
     setIsScanning(false);
   };
@@ -224,8 +248,23 @@ export default function App() {
       return;
     }
     setLoading(true);
+    // try {
+    //   await RNPrinterModule.connectBleDevice(device.address);
+    //   setConnectedDevice(device.address);
+    //   Alert.alert(
+    //     'Connected',
+    //     `Successfully connected to ${device.name || 'Device'}`,
+    //   );
+    // } catch (e) {
+    //   console.error('Connect failed', e);
+    //   Alert.alert(
+    //     'Connection Failed',
+    //     `Could not connect to ${device.name || 'Device'}.`,
+    //   );
+    // }
+
     try {
-      await RNPrinterModule.connectBleDevice(device.address);
+      await RNPrinterModule.connectBtClassicDevice(device.address);
       setConnectedDevice(device.address);
       Alert.alert(
         'Connected',
@@ -238,19 +277,30 @@ export default function App() {
         `Could not connect to ${device.name || 'Device'}.`,
       );
     }
+
     setLoading(false);
   };
 
   const disconnectDevice = async () => {
     setLoading(true);
+    // try {
+    //   await RNPrinterModule.disconnectBleDevice();
+    //   setConnectedDevice(null);
+    //   Alert.alert('Disconnected', 'Device successfully disconnected.');
+    // } catch (e) {
+    //   console.error(e);
+    //   Alert.alert('Error', 'Could not disconnect the device.');
+    // }
+
     try {
-      await RNPrinterModule.disconnectBleDevice();
+      await RNPrinterModule.disconnectBtClassicDevice();
       setConnectedDevice(null);
       Alert.alert('Disconnected', 'Device successfully disconnected.');
     } catch (e) {
       console.error(e);
       Alert.alert('Error', 'Could not disconnect the device.');
     }
+
     setLoading(false);
   };
 
