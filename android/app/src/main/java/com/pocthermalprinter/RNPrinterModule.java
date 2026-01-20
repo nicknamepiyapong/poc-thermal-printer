@@ -1,0 +1,297 @@
+package com.pocthermalprinter;
+
+import android.graphics.Bitmap;
+import android.graphics.Matrix;
+import android.graphics.BitmapFactory;
+
+
+import androidx.annotation.NonNull;
+import com.caysn.autoreplyprint.AutoReplyPrint;
+import com.facebook.react.bridge.Promise;
+import com.facebook.react.bridge.ReactApplicationContext;
+import com.facebook.react.bridge.ReactContextBaseJavaModule;
+import com.facebook.react.bridge.ReactMethod;
+import com.facebook.react.bridge.WritableArray;
+import com.facebook.react.bridge.WritableMap;
+import com.facebook.react.bridge.WritableNativeArray;
+import com.facebook.react.bridge.WritableNativeMap;
+import com.sun.jna.Pointer;
+import com.sun.jna.ptr.IntByReference;
+
+
+import java.util.HashMap;
+import java.util.Map;
+
+public class RNPrinterModule extends ReactContextBaseJavaModule {
+
+    private Pointer handle = Pointer.NULL;
+
+    public RNPrinterModule(@NonNull ReactApplicationContext reactContext) {
+        super(reactContext);
+    }
+
+    @NonNull
+    @Override
+    public String getName() {
+        return "RNPrinterModule";
+    }
+
+    // @ReactMethod
+    // public void scanBtDevices(Promise promise) {
+    // new Thread(() -> {
+    // Set<String> devices = new HashSet<>();
+    // IntByReference cancel = new IntByReference(0);
+
+    // AutoReplyPrint.CP_OnBluetoothDeviceDiscovered_Callback callback =
+    // new AutoReplyPrint.CP_OnBluetoothDeviceDiscovered_Callback() {
+    // @Override
+    // public void CP_OnBluetoothDeviceDiscovered(
+    // String device_name,
+    // String device_address,
+    // Pointer private_data
+    // ) {
+    // devices.add(device_address);
+    // }
+    // };
+
+    // AutoReplyPrint.INSTANCE.CP_Port_EnumBtDevice(12000, cancel, callback, null);
+
+    // WritableArray arr = new WritableNativeArray();
+    // for (String addr : devices) {
+    // arr.pushString(addr);
+    // }
+    // promise.resolve(arr);
+    // }).start();
+    // }
+
+    @ReactMethod
+    public void scanBleDevice(Promise promise) {
+        new Thread(() -> {
+            Map<String, String> devicesMap = new HashMap<>(); // address -> name
+            IntByReference cancel = new IntByReference(0);
+
+            AutoReplyPrint.CP_OnBluetoothDeviceDiscovered_Callback callback = new AutoReplyPrint.CP_OnBluetoothDeviceDiscovered_Callback() {
+                @Override
+                public void CP_OnBluetoothDeviceDiscovered(
+                        String device_name,
+                        String device_address,
+                        Pointer private_data) {
+                    if (device_name == null || device_name.equals("null"))
+                        return;
+
+                    if (!devicesMap.containsKey(device_address)) {
+                        devicesMap.put(device_address, device_name);
+                    }
+                }
+            };
+
+            AutoReplyPrint.INSTANCE.CP_Port_EnumBleDevice(20000, cancel, callback, null);
+
+            WritableArray arr = new WritableNativeArray();
+            for (Map.Entry<String, String> entry : devicesMap.entrySet()) {
+                WritableMap map = new WritableNativeMap();
+                map.putString("name", entry.getValue());
+                map.putString("address", entry.getKey());
+                arr.pushMap(map);
+            }
+
+            promise.resolve(arr);
+        }).start();
+    }
+
+    @ReactMethod
+    public void connectBleDevice(String bleAddress, Promise promise) {
+        new Thread(() -> {
+            try {
+                handle = AutoReplyPrint.INSTANCE.CP_Port_OpenBtBle(bleAddress, 1);
+
+                if (handle != Pointer.NULL) {
+                    promise.resolve("SUCCESS");
+                } else {
+                    promise.reject("BLE_CONNECT_FAILED", "Cannot connect to BLE device");
+                }
+
+            } catch (Exception e) {
+                promise.reject("BLE_CONNECT_ERROR", e.getMessage(), e);
+            }
+        }).start();
+    }
+
+    @ReactMethod
+    public void disconnectBleDevice(Promise promise) {
+        new Thread(() -> {
+            try {
+                if (handle != Pointer.NULL) {
+                    AutoReplyPrint.INSTANCE.CP_Port_Close(handle);
+                    handle = Pointer.NULL;
+                    promise.resolve("Disconnected");
+                } else {
+                    promise.reject("BLE_DISCONNECT_FAILED", "No device connected");
+                }
+            } catch (Exception e) {
+                promise.reject("BLE_DISCONNECT_ERROR", e.getMessage(), e);
+            }
+        }).start();
+    }
+
+    @ReactMethod
+public void testPrintSampleTicket(Promise promise) {
+    new Thread(() -> {
+        try {
+            if (handle == Pointer.NULL) {
+                promise.reject("PRINT_FAILED", "No BLE printer connected");
+                return;
+            }
+
+            int paperWidth = 384;
+
+            // Reset printer
+            AutoReplyPrint.INSTANCE.CP_Pos_ResetPrinter(handle);
+            AutoReplyPrint.INSTANCE.CP_Pos_SetMultiByteMode(handle);
+            AutoReplyPrint.INSTANCE.CP_Pos_SetMultiByteEncoding(handle, AutoReplyPrint.CP_MultiByteEncoding_UTF8);
+
+            // Header
+            AutoReplyPrint.INSTANCE.CP_Pos_PrintText(handle, "123xxstreet,xxxcity,xxxxstate\r\n");
+            AutoReplyPrint.INSTANCE.CP_Pos_SetAlignment(handle, AutoReplyPrint.CP_Pos_Alignment_Right);
+            AutoReplyPrint.INSTANCE.CP_Pos_PrintText(handle, "TEL 9999-99-9999  C#2\r\n");
+            AutoReplyPrint.INSTANCE.CP_Pos_SetAlignment(handle, AutoReplyPrint.CP_Pos_Alignment_HCenter);
+            AutoReplyPrint.INSTANCE.CP_Pos_PrintText(handle, "yyyy-MM-dd HH:mm:ss\r\n");
+            AutoReplyPrint.INSTANCE.CP_Pos_FeedLine(handle, 1);
+
+            // Items
+            String[] items = {"apples", "grapes", "bananas", "lemons", "oranges"};
+            String[] prices = {"$10.00", "$20.00", "$30.00", "$40.00", "$100.00"};
+            for (int i = 0; i < items.length; i++) {
+                AutoReplyPrint.INSTANCE.CP_Pos_PrintText(handle, items[i]);
+                AutoReplyPrint.INSTANCE.CP_Pos_SetHorizontalAbsolutePrintPosition(handle, paperWidth - 12 * (i == 4 ? 7 : 6));
+                AutoReplyPrint.INSTANCE.CP_Pos_PrintText(handle, prices[i]);
+                AutoReplyPrint.INSTANCE.CP_Pos_FeedLine(handle, 1);
+            }
+
+            // Tax and total
+            AutoReplyPrint.INSTANCE.CP_Pos_PrintText(handle, "Before adding tax");
+            AutoReplyPrint.INSTANCE.CP_Pos_SetHorizontalAbsolutePrintPosition(handle, paperWidth - 12 * 7);
+            AutoReplyPrint.INSTANCE.CP_Pos_PrintText(handle, "$200.00");
+            AutoReplyPrint.INSTANCE.CP_Pos_FeedLine(handle, 1);
+
+            AutoReplyPrint.INSTANCE.CP_Pos_PrintText(handle, "tax 5.0%");
+            AutoReplyPrint.INSTANCE.CP_Pos_SetHorizontalAbsolutePrintPosition(handle, paperWidth - 12 * 6);
+            AutoReplyPrint.INSTANCE.CP_Pos_PrintText(handle, "$10.00");
+            AutoReplyPrint.INSTANCE.CP_Pos_FeedLine(handle, 1);
+
+            // Underline
+            String line = "";
+            for (int i = 0; i < paperWidth / 12; ++i) line += " ";
+            AutoReplyPrint.INSTANCE.CP_Pos_SetTextUnderline(handle, 2);
+            AutoReplyPrint.INSTANCE.CP_Pos_PrintText(handle, line);
+            AutoReplyPrint.INSTANCE.CP_Pos_SetTextUnderline(handle, 0);
+            AutoReplyPrint.INSTANCE.CP_Pos_FeedLine(handle, 1);
+
+            // Total
+            AutoReplyPrint.INSTANCE.CP_Pos_SetTextScale(handle, 1, 0);
+            AutoReplyPrint.INSTANCE.CP_Pos_PrintText(handle, "total");
+            AutoReplyPrint.INSTANCE.CP_Pos_SetHorizontalAbsolutePrintPosition(handle, paperWidth - 12 * 2 * 7);
+            AutoReplyPrint.INSTANCE.CP_Pos_PrintText(handle, "$190.00");
+            AutoReplyPrint.INSTANCE.CP_Pos_SetTextScale(handle, 0, 0);
+            AutoReplyPrint.INSTANCE.CP_Pos_FeedLine(handle, 1);
+
+            // Customer payment and change
+            AutoReplyPrint.INSTANCE.CP_Pos_PrintText(handle, "Customer's payment");
+            AutoReplyPrint.INSTANCE.CP_Pos_SetHorizontalAbsolutePrintPosition(handle, paperWidth - 12 * 7);
+            AutoReplyPrint.INSTANCE.CP_Pos_PrintText(handle, "$200.00");
+            AutoReplyPrint.INSTANCE.CP_Pos_FeedLine(handle, 1);
+
+            AutoReplyPrint.INSTANCE.CP_Pos_PrintText(handle, "Change");
+            AutoReplyPrint.INSTANCE.CP_Pos_SetHorizontalAbsolutePrintPosition(handle, paperWidth - 12 * 6);
+            AutoReplyPrint.INSTANCE.CP_Pos_PrintText(handle, "$10.00");
+            AutoReplyPrint.INSTANCE.CP_Pos_FeedLine(handle, 1);
+
+            // Barcode
+            AutoReplyPrint.INSTANCE.CP_Pos_SetBarcodeHeight(handle, 60);
+            AutoReplyPrint.INSTANCE.CP_Pos_SetBarcodeUnitWidth(handle, 3);
+            AutoReplyPrint.INSTANCE.CP_Pos_SetBarcodeReadableTextPosition(handle, AutoReplyPrint.CP_Pos_BarcodeTextPrintPosition_BelowBarcode);
+            AutoReplyPrint.INSTANCE.CP_Pos_PrintBarcode(handle, AutoReplyPrint.CP_Pos_BarcodeType_UPCA, "12345678901");
+
+            // Beep
+            AutoReplyPrint.INSTANCE.CP_Pos_Beep(handle, 1, 500);
+
+
+            promise.resolve("PRINT_SUCCESS");
+
+        } catch (Exception e) {
+            promise.reject("PRINT_ERROR", e.getMessage(), e);
+        }
+    }).start();
+}
+
+    @ReactMethod
+    public void printImageFromBase64(String base64Image, Promise promise) {
+        new Thread(() -> {
+            try {
+                if (handle == Pointer.NULL) {
+                    promise.reject("PRINT_FAILED", "No BLE printer connected");
+                    return;
+                }
+
+                // แปลง Base64 เป็น Bitmap
+                byte[] decodedBytes = android.util.Base64.decode(base64Image, android.util.Base64.DEFAULT);
+                Bitmap bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.length);
+
+                if (bitmap == null || bitmap.getWidth() == 0 || bitmap.getHeight() == 0) {
+                    promise.reject("PRINT_FAILED", "Invalid image data");
+                    return;
+                }
+
+                // ตั้งค่าเครื่องพิมพ์
+                AutoReplyPrint.INSTANCE.CP_Pos_SetPrintSpeed(handle, 50); // ความเร็ว
+                AutoReplyPrint.INSTANCE.CP_Pos_SetPrintDensity(handle, 15); // ความเข้ม
+
+                int paperWidth = 384;
+
+                // ดึง resolution ของเครื่องพิมพ์
+                IntByReference width_mm = new IntByReference();
+                IntByReference height_mm = new IntByReference();
+                IntByReference dots_per_mm = new IntByReference();
+                if (AutoReplyPrint.INSTANCE.CP_Printer_GetPrinterResolutionInfo(handle, width_mm, height_mm, dots_per_mm)) {
+                    paperWidth = width_mm.getValue() * dots_per_mm.getValue();
+                }
+
+                // ปรับขนาด bitmap ให้พอดีกับความกว้างเครื่องพิมพ์
+                bitmap = scaleImageToWidth(bitmap, paperWidth);
+
+                // พิมพ์ภาพแบบ Raster โดยใช้ compression จาก SDK
+                boolean result = AutoReplyPrint.CP_Pos_PrintRasterImageFromData_Helper.PrintRasterImageFromBitmap(
+                        handle,
+                        bitmap.getWidth(),
+                        bitmap.getHeight(),
+                        bitmap,
+                        AutoReplyPrint.CP_ImageBinarizationMethod_ErrorDiffusion,
+                        AutoReplyPrint.CP_ImageCompressionMethod_Level2 // ใช้ตัวแปรจาก SDK
+                );
+
+                if (result) {
+                    AutoReplyPrint.INSTANCE.CP_Pos_FeedLine(handle, 2);
+                    promise.resolve("PRINT_SUCCESS");
+                    
+                } else {
+                    promise.reject("PRINT_FAILED", "Failed to write image to printer");
+                }
+
+            } catch (Exception e) {
+                promise.reject("PRINT_ERROR", e.getMessage(), e);
+            }
+        }).start();
+    }
+
+    public static Bitmap scaleImageToWidth(Bitmap bitmap, int w) {
+        int bitmapWidth = bitmap.getWidth();
+        int bitmapHeight = bitmap.getHeight();
+        float scaleWidth = (float) w / bitmapWidth;
+        float scaleHeight = scaleWidth;
+        Matrix matrix = new Matrix();
+        matrix.postScale(scaleWidth, scaleHeight);
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmapWidth, bitmapHeight, matrix, false);
+    }
+
+
+}

@@ -1,4 +1,4 @@
-import React, {useRef, useState} from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import {
   SafeAreaView,
   View,
@@ -10,21 +10,22 @@ import {
   ActivityIndicator,
   Alert,
 } from 'react-native';
-import {captureRef} from 'react-native-view-shot';
+import { captureRef } from 'react-native-view-shot';
+import { ensureBluetoothPermissions } from './ensureBluetoothPermissions'
 
 
 const COLORS = {
-  primary: '#007AFF', 
-  secondary: '#FF3B30', 
-  background: '#F0F2F5', 
-  card: '#FFFFFF', 
-  text: '#1C1C1E', 
+  primary: '#007AFF',
+  secondary: '#FF3B30',
+  background: '#F0F2F5',
+  card: '#FFFFFF',
+  text: '#1C1C1E',
   subText: '#8E8E93',
-  success: '#34C759', 
-  action: '#FF9500', 
+  success: '#34C759',
+  action: '#FF9500',
 };
 
-const {RNPrinterModule} = NativeModules;
+const { RNPrinterModule } = NativeModules;
 
 interface BleDevice {
   name: string;
@@ -36,7 +37,7 @@ const TestCommandList: React.FC<{
   connectedAddress: string;
   setLoading: (loading: boolean) => void;
   loading: boolean;
-}> = ({connectedAddress, setLoading, loading}) => {
+}> = ({ connectedAddress, setLoading, loading }) => {
   const previewRef = useRef<View>(null);
 
   const testPrint = async () => {
@@ -59,7 +60,7 @@ const TestCommandList: React.FC<{
         format: 'png',
         quality: 1,
         result: 'base64',
-        width: 384, 
+        width: 384,
       });
 
       await RNPrinterModule.printImageFromBase64(base64Image);
@@ -71,12 +72,14 @@ const TestCommandList: React.FC<{
     setLoading(false);
   };
 
+
+
   const commands = [
-    {id: 'test', name: 'Print Sample Ticket', action: testPrint},
-    {id: 'image', name: 'Print Preview Image', action: printPreviewImage},
+    { id: 'test', name: 'Print Sample Ticket', action: testPrint },
+    { id: 'image', name: 'Print Preview Image', action: printPreviewImage },
   ];
 
-  const renderCommandItem = ({item}: {item: any}) => (
+  const renderCommandItem = ({ item }: { item: any }) => (
     <TouchableOpacity
       style={[styles.commandCard, loading && styles.commandDisabled]}
       onPress={item.action}
@@ -164,10 +167,8 @@ const TestCommandList: React.FC<{
         (Image width for capture is 384px)
       </Text>
 
-      {/* แสดงตัวอย่าง preview image ที่ปรับปรุงแล้ว */}
       <ReceiptPreview />
 
-      {/* List ของคำสั่ง */}
       <FlatList
         data={commands}
         keyExtractor={item => item.id}
@@ -186,6 +187,16 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
 
+
+  useEffect(() => {
+    const init = async () => {
+      console.log("init app");
+      const result = await ensureBluetoothPermissions();
+      console.log("Permissions granted:", result);
+    };
+    init();
+  }, []);
+
   // --- Functions (Unchanged) ---
   const scanDevices = async () => {
     if (isScanning) return;
@@ -194,6 +205,7 @@ export default function App() {
     setDevices([]);
     try {
       const found: BleDevice[] = await RNPrinterModule.scanBleDevice();
+      console.log('found', found)
       setDevices(found);
     } catch (e) {
       console.error('Scan failed', e);
@@ -243,7 +255,7 @@ export default function App() {
   };
 
   // --- Components (Unchanged) ---
-  const renderDeviceItem = ({item}: {item: BleDevice}) => {
+  const renderDeviceItem = ({ item }: { item: BleDevice }) => {
     const isConnected = connectedDevice === item.address;
     const isDisabled = loading || isScanning;
 
@@ -284,7 +296,6 @@ export default function App() {
     );
   };
 
-  // --- Main Render (Unchanged) ---
 
   return (
     <SafeAreaView style={styles.container}>
@@ -292,7 +303,6 @@ export default function App() {
         <Text style={styles.headerTitle}>BLE Printer Connect</Text>
       </View>
 
-      {/* ภาวะที่เชื่อมต่อแล้ว (Connected State) */}
       {connectedDevice ? (
         <TestCommandList
           connectedAddress={connectedDevice}
@@ -300,9 +310,7 @@ export default function App() {
           loading={loading}
         />
       ) : (
-        // ภาวะที่ยังไม่ได้เชื่อมต่อ (Disconnected State)
         <>
-          {/* Scan Button & Indicator */}
           <View style={styles.scanButtonContainer}>
             <TouchableOpacity
               style={[
@@ -319,7 +327,6 @@ export default function App() {
             </TouchableOpacity>
           </View>
 
-          {/* Device List */}
           <Text style={styles.listTitle}>Found Devices</Text>
           <FlatList
             data={devices}
@@ -403,7 +410,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: COLORS.primary,
-    shadowOffset: {width: 0, height: 4},
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 5,
     elevation: 6,
@@ -447,7 +454,7 @@ const styles = StyleSheet.create({
     marginVertical: 6,
     borderRadius: 12,
     shadowColor: '#000',
-    shadowOffset: {width: 0, height: 2},
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 3,
     elevation: 3,
@@ -530,8 +537,8 @@ const styles = StyleSheet.create({
   // --- NEW: Receipt Preview Styles ---
   receiptContainer: {
     // จำกัดความกว้างให้ดูเหมือนกระดาษ thermal
-    width: '90%', 
-    maxWidth: 384 , // 384px คือความกว้างของ image ที่จะถูก capture (ประมาณ 153dp)
+    width: '90%',
+    maxWidth: 384, // 384px คือความกว้างของ image ที่จะถูก capture (ประมาณ 153dp)
     alignSelf: 'center', // จัดให้อยู่ตรงกลาง
     backgroundColor: '#FFF',
     paddingVertical: 15,
@@ -548,7 +555,7 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
   receiptInfo: {
-    fontSize: 14, // ใช้ font เล็กสำหรับข้อมูล
+    fontSize: 18, // ใช้ font เล็กสำหรับข้อมูล
   },
   receiptSeparator: {
     fontSize: 14,
@@ -600,12 +607,12 @@ const styles = StyleSheet.create({
   receiptTotalLabel: {
     fontSize: 18,
     fontWeight: '900', // ตัวหนามาก
- 
+
   },
   receiptTotalValue: {
     fontSize: 18,
     fontWeight: '900', // ตัวหนามาก
- 
+
   },
   receiptFooter: {
     alignItems: 'center',
@@ -650,7 +657,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     minWidth: 120,
     shadowColor: COLORS.secondary,
-    shadowOffset: {width: 0, height: 2},
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 3,
     elevation: 4,

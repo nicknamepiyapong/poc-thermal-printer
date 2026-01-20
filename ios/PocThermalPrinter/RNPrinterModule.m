@@ -186,8 +186,8 @@ RCT_REMAP_METHOD(printImageFromBase64,
             reject(@"NOT_CONNECTED", @"No BLE printer connected", nil);
             return;
         }
-
-        int pageWidth = 384; 
+       CP_Pos_SetPrintSpeed(gBleHandle, 100);
+        int pageWidth = 384;
         int dstW = image.size.width;
         int dstH = image.size.height;
         if (dstW > pageWidth) {
