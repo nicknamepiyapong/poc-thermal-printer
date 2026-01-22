@@ -1,11 +1,11 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
   SafeAreaView,
   View,
   Text,
   FlatList,
   TouchableOpacity,
-  NativeModules,
+  // NativeModules,
   StyleSheet,
   ActivityIndicator,
   Alert,
@@ -13,6 +13,9 @@ import {
 import { captureRef } from 'react-native-view-shot';
 import { ensureBluetoothPermissions } from './ensureBluetoothPermissions'
 
+import { BleManager, Device } from 'react-native-ble-plx'
+import { Buffer } from 'buffer'
+import { convertImageUriToEscPosRasterBytes } from './utils/escposImage'
 
 const COLORS = {
   primary: '#007AFF',
@@ -25,7 +28,7 @@ const COLORS = {
   action: '#FF9500',
 };
 
-const { RNPrinterModule } = NativeModules;
+// const { RNPrinterModule } = NativeModules;
 
 interface BleDevice {
   name: string;
@@ -35,54 +38,12 @@ interface BleDevice {
 
 const TestCommandList: React.FC<{
   connectedAddress: string;
+  testPrint: any;
+  printPreviewImage: any;
+  previewRef: any;
   setLoading: (loading: boolean) => void;
   loading: boolean;
-}> = ({ connectedAddress, setLoading, loading }) => {
-  const previewRef = useRef<View>(null);
-
-  const testPrint = async () => {
-    setLoading(true);
-    // try {
-    //   await RNPrinterModule.testPrintSampleTicket();
-    //   Alert.alert('Print Success', 'Test print completed.');
-    // } catch (e) {
-    //   console.error(e);
-    //   Alert.alert('Print Failed', 'Could not complete test print.');
-    // }
-
-    try {
-      await RNPrinterModule.testPrintByBtClassic();
-      Alert.alert('Print Success', 'Test print completed.');
-    } catch (e) {
-      console.error(e);
-      Alert.alert('Print Failed', 'Could not complete test print.');
-    }
-
-
-    setLoading(false);
-  };
-
-  const printPreviewImage = async () => {
-    if (!previewRef.current) return;
-    setLoading(true);
-    try {
-      const base64Image = await captureRef(previewRef, {
-        format: 'png',
-        quality: 1,
-        result: 'base64',
-        width: 384,
-      });
-
-      await RNPrinterModule.printImageFromBase64(base64Image);
-      Alert.alert('Print Success', 'Image sent to printer.');
-    } catch (e) {
-      console.error('Image print failed', e);
-      Alert.alert('Print Failed', 'Could not print image.');
-    }
-    setLoading(false);
-  };
-
-
+}> = ({ connectedAddress, testPrint, printPreviewImage, previewRef, setLoading, loading }) => {
 
   const commands = [
     { id: 'test', name: 'Print Sample Ticket', action: testPrint },
@@ -193,9 +154,221 @@ const TestCommandList: React.FC<{
 
 export default function App() {
   const [devices, setDevices] = useState<BleDevice[]>([]);
-  const [connectedDevice, setConnectedDevice] = useState<string | null>(null);
+  const [connectedInstantDevice, setConnectedInstantDevice] = useState<Device | null>(null);
   const [loading, setLoading] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+
+
+  const previewRef = useRef<View>(null);
+
+  const manager = new BleManager()
+  let devicesMap = new Map<string, Device>()
+
+  type WritableChar = {
+    serviceUUID: string
+    charUUID: string
+    withResponse: boolean
+    withoutResponse: boolean
+  }
+
+  const [allWritableChars, setAllWritableChars] = useState<WritableChar[]>([])
+
+  const preferred = [
+    {
+      serviceUUID: '49535343-fe7d-4ae5-8fa9-9fafd205e455',
+      charUUID: '49535343-8841-43f4-a8d4-ecbe34729bb3',
+    },
+    {
+      serviceUUID: '000018f0-0000-1000-8000-00805f9b34fb',
+      charUUID: '00002af1-0000-1000-8000-00805f9b34fb',
+    },
+    {
+      serviceUUID: 'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
+      charUUID: 'bef8d6c9-9c21-4c9e-b632-bd58c1009f9f',
+    },
+  ]
+
+
+
+  async function connectBlePrinter(deviceId: string) {
+    console.log('🔌 Connecting to BLE printer:', deviceId)
+    setAllWritableChars([]) // ✅ reset ทุกครั้งก่อนหาใหม่
+
+    const device = await manager.connectToDevice(deviceId, { timeout: 15000 })
+    const discovered = await device.discoverAllServicesAndCharacteristics()
+
+    const services = await discovered.services()
+    console.log('✅ Services count:', services.length)
+
+    const tempWritableChars: WritableChar[] = []
+
+    // ... loop services/characteristics
+    for (const s of services) {
+      const chars = await s.characteristics()
+
+      for (const c of chars) {
+        const writable = c.isWritableWithResponse || c.isWritableWithoutResponse
+        if (writable) {
+          console.log('✅ Writable char found:', {
+            serviceUUID: s.uuid,
+            charUUID: c.uuid,
+            withResponse: c.isWritableWithResponse,
+            withoutResponse: c.isWritableWithoutResponse,
+          })
+
+          tempWritableChars.push({
+            serviceUUID: s.uuid,
+            charUUID: c.uuid,
+            withResponse: !!c.isWritableWithResponse,
+            withoutResponse: !!c.isWritableWithoutResponse,
+          })
+
+        }
+      }
+    }
+
+    setAllWritableChars(tempWritableChars)
+
+    return device
+  }
+
+  function bytesToBase64(bytes: number[]) {
+    return Buffer.from(Uint8Array.from(bytes)).toString('base64')
+  }
+
+  function chunkArray(arr: number[], size: number) {
+    const chunks: number[][] = []
+    for (let i = 0; i < arr.length; i += size) {
+      chunks.push(arr.slice(i, i + size))
+    }
+    return chunks
+  }
+
+
+  async function blePrintText(
+    device: Device,
+    serviceUUID: string,
+    charUUID: string,
+    text: string
+  ) {
+    // ✅ ESC/POS: init + text + linefeed
+    const escposBytes: number[] = [
+      0x1b, 0x40, // ESC @ init
+      ...Buffer.from(text, 'ascii'),
+      0x0a, 0x0a,
+    ]
+
+    const chunks = chunkArray(escposBytes, 20)
+
+    for (const chunk of chunks) {
+      const payloadBase64 = bytesToBase64(chunk)
+
+      // ✅ เลือกแบบ withoutResponse เป็นหลัก (printer ส่วนใหญ่ชอบแบบนี้)
+      await device.writeCharacteristicWithoutResponseForService(
+        serviceUUID,
+        charUUID,
+        payloadBase64
+      )
+    }
+
+    // console.log('✅ Print done')
+  }
+
+  function pickWriteTarget(allWritableChars: any, preferredList: any) {
+    for (const p of preferredList) {
+      const found = allWritableChars.find(
+        (x: any) =>
+          x.serviceUUID.toLowerCase() === p.serviceUUID.toLowerCase() &&
+          x.charUUID.toLowerCase() === p.charUUID.toLowerCase()
+      )
+      if (found) return found
+    }
+    return allWritableChars[0] // fallback สุดท้าย
+  }
+
+  const printPreviewImage = useCallback(async () => {
+    if (!previewRef.current) return;
+    setLoading(true);
+    try {
+
+      setTimeout(async () => {
+
+        // 1) จับภาพ (ไม่ต้องกำหนด width ที่ ViewShot)
+        const uri = await captureRef(previewRef, {
+          format: 'png',
+          quality: 1,
+          result: 'tmpfile',
+          width: 384,
+        });
+
+
+        // ✅ แปลงเป็น ESC/POS bytes
+        const escposBytes = await convertImageUriToEscPosRasterBytes(uri, {
+          paperWidthDots: 384,
+          threshold: 170,  // ปรับเข้ม/อ่อน
+          dither: true,    // ให้สวยขึ้น
+        })
+
+         // ❌ ยังไม่พบวิธีสั่งปริ้นภาพผ่าน BLE
+
+        // console.log('✅ Print Image done')
+        // Alert.alert('Print Success', 'Image sent to printer.');
+      }, 1000);
+
+    } catch (e) {
+      console.error('Image print failed', e);
+      Alert.alert('Print Failed', 'Could not print image.');
+    }
+    setLoading(false);
+  }, [previewRef, connectedInstantDevice, allWritableChars, preferred]);
+
+
+  const testPrint = useCallback(async () => {
+    setLoading(true);
+
+    try {
+
+      if (!connectedInstantDevice) {
+        Alert.alert('Not Connected', 'Please connect to a device first.');
+        setLoading(false);
+        return;
+      }
+
+      // ✅ เรียกตรงนี้!
+      const target = pickWriteTarget(allWritableChars, preferred)
+
+      // แล้วค่อยเอา target ไปพิมพ์
+      const serviceUUID = target.serviceUUID
+      const charUUID = target.charUUID
+
+      const text = ('\n\nHELLO BLE PRINTER HELLO BLE PRINTER HELLO BLE PRINTER HELLO BLE PRINTER HELLO BLE PRINTER\n\n');
+
+      await blePrintText(
+        connectedInstantDevice,
+        serviceUUID,
+        charUUID,
+        text);
+
+      const isDeli3582 = connectedInstantDevice.name?.includes('Printer_3582_BLE') || false;
+      // Feed extra lines for Deli 3582
+      isDeli3582 && await blePrintText(
+        connectedInstantDevice,
+        serviceUUID,
+        charUUID,
+        '\n');
+      // -----------------------------------//
+
+      console.log('✅ Print Text done')
+      Alert.alert('Print Success', 'Test print completed.');
+    } catch (e) {
+      console.error(e);
+      Alert.alert('Print Failed', 'Could not complete test print.');
+    }
+
+
+    setLoading(false);
+
+  }, [connectedInstantDevice, allWritableChars, preferred]);
 
 
   useEffect(() => {
@@ -213,59 +386,66 @@ export default function App() {
     setLoading(true);
     setIsScanning(true);
     setDevices([]);
-    // try {
-    //   const found: BleDevice[] = await RNPrinterModule.scanBleDevice();
-    //   console.log('found', found)
-    //   setDevices(found);
-    // } catch (e) {
-    //   console.error('Scan failed', e);
-    //   Alert.alert(
-    //     'Scan Failed',
-    //     'Could not scan for BLE devices. Check permissions.',
-    //   );
-    // }
 
     try {
-      const found: any = await RNPrinterModule.scanBtClassicDevices();
-      console.log('found', found)
-      setDevices(found);
+
+      devicesMap.clear()
+
+      manager.startDeviceScan(null, null, (error, device) => {
+        if (error) {
+          console.log("❌ Scan error:", error)
+          return
+        }
+
+        if (!device) return
+
+        // ✅ filter: เอาเฉพาะที่มีชื่อ (กันรก)
+        if (!device.name && !device.localName) return
+
+        // ✅ กันซ้ำด้วย id
+        devicesMap.set(device.id, device)
+
+        // ✅ แปลง map → array แล้วส่งออกไปให้ UI render
+        const list = Array.from(devicesMap.values())
+        setDevices(
+          list.map(d => ({
+            name: d.name || d.localName || 'N/A',
+            address: d.id,
+          }))
+        )
+        // Printer_3582_BLE , P58H40-F7D4
+
+      })
+
+      // ✅ stop scan หลังครบเวลา
+      setTimeout(() => {
+        manager.stopDeviceScan()
+        console.log("🛑 stopDeviceScan()")
+      }, 8000)
+
     } catch (e) {
       console.error('Scan failed', e);
       Alert.alert(
         'Scan Failed',
-        'Could not scan for Bluetooth devices. Check permissions.',
+        'Could not scan for BLE devices. Check permissions.',
       );
     }
-
 
     setLoading(false);
     setIsScanning(false);
   };
 
-  const connectDevice = async (device: BleDevice) => {
-    if (connectedDevice === device.address) {
+  const connectDevice = useCallback(async (device: BleDevice) => {
+    if (connectedInstantDevice?.id === device.address) {
       Alert.alert('Already Connected', `${device.name} is already connected.`);
       return;
     }
     setLoading(true);
-    // try {
-    //   await RNPrinterModule.connectBleDevice(device.address);
-    //   setConnectedDevice(device.address);
-    //   Alert.alert(
-    //     'Connected',
-    //     `Successfully connected to ${device.name || 'Device'}`,
-    //   );
-    // } catch (e) {
-    //   console.error('Connect failed', e);
-    //   Alert.alert(
-    //     'Connection Failed',
-    //     `Could not connect to ${device.name || 'Device'}.`,
-    //   );
-    // }
 
     try {
-      await RNPrinterModule.connectBtClassicDevice(device.address);
-      setConnectedDevice(device.address);
+      const connected = await connectBlePrinter(device.address);
+      setConnectedInstantDevice(connected);
+
       Alert.alert(
         'Connected',
         `Successfully connected to ${device.name || 'Device'}`,
@@ -279,22 +459,14 @@ export default function App() {
     }
 
     setLoading(false);
-  };
+  }, [connectedInstantDevice]);
 
-  const disconnectDevice = async () => {
+  const disconnectDevice = useCallback(async () => {
     setLoading(true);
-    // try {
-    //   await RNPrinterModule.disconnectBleDevice();
-    //   setConnectedDevice(null);
-    //   Alert.alert('Disconnected', 'Device successfully disconnected.');
-    // } catch (e) {
-    //   console.error(e);
-    //   Alert.alert('Error', 'Could not disconnect the device.');
-    // }
 
     try {
-      await RNPrinterModule.disconnectBtClassicDevice();
-      setConnectedDevice(null);
+      await connectedInstantDevice?.cancelConnection();
+      setConnectedInstantDevice(null);
       Alert.alert('Disconnected', 'Device successfully disconnected.');
     } catch (e) {
       console.error(e);
@@ -302,11 +474,11 @@ export default function App() {
     }
 
     setLoading(false);
-  };
+  }, [connectedInstantDevice]);
 
   // --- Components (Unchanged) ---
   const renderDeviceItem = ({ item }: { item: BleDevice }) => {
-    const isConnected = connectedDevice === item.address;
+    const isConnected = connectedInstantDevice?.id === item.address;
     const isDisabled = loading || isScanning;
 
     return (
@@ -353,9 +525,12 @@ export default function App() {
         <Text style={styles.headerTitle}>BLE Printer Connect</Text>
       </View>
 
-      {connectedDevice ? (
+      {connectedInstantDevice ? (
         <TestCommandList
-          connectedAddress={connectedDevice}
+          connectedAddress={connectedInstantDevice?.id || ''}
+          testPrint={testPrint}
+          printPreviewImage={printPreviewImage}
+          previewRef={previewRef}
           setLoading={setLoading}
           loading={loading}
         />
@@ -388,12 +563,12 @@ export default function App() {
         </>
       )}
 
-      {/* Disconnect Footer (แสดงทุกครั้งที่ connectedDevice มีค่า) */}
-      {connectedDevice && (
+      {/* Disconnect Footer (แสดงทุกครั้งที่ connectedInstantDevice มีค่า) */}
+      {connectedInstantDevice && (
         <View style={styles.footer}>
           <View style={styles.connectionStatus}>
             <Text style={styles.statusLabel}>Connected:</Text>
-            <Text style={styles.statusAddress}>{connectedDevice}</Text>
+            <Text style={styles.statusAddress}>{connectedInstantDevice?.id}</Text>
           </View>
 
           {/* Disconnect Button อย่างเดียว */}
