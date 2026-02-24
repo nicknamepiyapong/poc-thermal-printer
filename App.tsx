@@ -9,6 +9,7 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
+  Platform,
 } from 'react-native';
 import { captureRef } from 'react-native-view-shot';
 import { ensureBluetoothPermissions } from './ensureBluetoothPermissions'
@@ -158,9 +159,11 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
 
+  const isAndroid = Platform.OS === 'android';
 
   const previewRef = useRef<View>(null);
-
+  const [serviceUUID, setServiceUUID] = useState<string>('');
+  const [charUUID, setCharUUID] = useState<string>('');
   const manager = new BleManager()
   let devicesMap = new Map<string, Device>()
 
@@ -171,8 +174,7 @@ export default function App() {
     withoutResponse: boolean
   }
 
-  const [allWritableChars, setAllWritableChars] = useState<WritableChar[]>([])
-
+  // รายการ Service UUID ที่ printer นิยมใช้
   const preferred = [
     {
       serviceUUID: '49535343-fe7d-4ae5-8fa9-9fafd205e455',
@@ -188,11 +190,31 @@ export default function App() {
     },
   ]
 
+  const PRINTER_SERVICE_UUIDS = [
+    '49535343-fe7d-4ae5-8fa9-9fafd205e455',
+    '000018f0-0000-1000-8000-00805f9b34fb',
+    'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
+  ].map(x => x.toLowerCase())
+
+  const PRINTER_NAME_KEYWORDS = [
+    'printer',
+    'print',
+    'pos',
+    'escpos',
+    'thermal',
+    'p58',
+    'p80',
+    'xp-',
+    'xprinter',
+    'gprinter',
+    'rongta',
+    'zjiang',
+    'mpt',
+  ]
 
 
   async function connectBlePrinter(deviceId: string) {
     console.log('🔌 Connecting to BLE printer:', deviceId)
-    setAllWritableChars([]) // ✅ reset ทุกครั้งก่อนหาใหม่
 
     const device = await manager.connectToDevice(deviceId, { timeout: 15000 })
     const discovered = await device.discoverAllServicesAndCharacteristics()
@@ -227,7 +249,14 @@ export default function App() {
       }
     }
 
-    setAllWritableChars(tempWritableChars)
+    const target = pickWriteTarget(tempWritableChars, preferred)
+
+    // แล้วค่อยเอา target ไปพิมพ์
+    const serviceUUID = target.serviceUUID
+    const charUUID = target.charUUID
+
+    setServiceUUID(serviceUUID)
+    setCharUUID(charUUID)
 
     return device
   }
@@ -286,10 +315,107 @@ export default function App() {
     return allWritableChars[0] // fallback สุดท้าย
   }
 
+
+  async function bleWriteBytes(
+    device: Device,
+    serviceUUID: string,
+    charUUID: string,
+    bytes: number[],
+  ) {
+
+    let chunkSize = 20
+    // เพื่อเพ่ิม speed ในการ print เราต้องคำนวน เลือกขนาด chunkSize สูงสุดที่เหมาะ
+    // ถ้าคุณส่ง chunk 20 bytes → ช้ามาก ลองปรับเป็น 128 / 180 / 200
+    try {
+      const devAny = (await device.requestMTU(247)) as any
+      const mtu = devAny?.mtu ?? 247
+      chunkSize = Math.min(180, mtu - 3)
+    } catch {
+      chunkSize = 120
+    }
+
+    console.log('Using chunk size:', chunkSize)
+
+    const arr = bytes instanceof Uint8Array ? Array.from(bytes) : bytes
+    const chunks = chunkArray(arr, chunkSize)
+
+    for (let i = 0; i < chunks.length; i++) {
+      const payload = bytesToBase64(chunks[i])
+
+      await device.writeCharacteristicWithoutResponseForService(
+        serviceUUID,
+        charUUID,
+        payload
+      )
+    }
+  }
+
+
+  async function bleWriteBytesFast(
+    device: Device,
+    serviceUUID: string,
+    charUUID: string,
+    bytes: number[],
+  ) {
+
+    let chunkSize = 20
+    // เพื่อเพ่ิม speed ในการ print เราต้องคำนวน เลือกขนาด chunkSize สูงสุดที่เหมาะ
+    // ถ้าคุณส่ง chunk 20 bytes → ช้ามาก ลองปรับเป็น 128 / 180 / 200
+    try {
+      const devAny = (await device.requestMTU(247)) as any
+      const mtu = devAny?.mtu ?? 247
+      chunkSize = Math.min(180, mtu - 3)
+    } catch {
+      chunkSize = 120
+    }
+
+
+    const arr = bytes instanceof Uint8Array ? Array.from(bytes) : bytes
+    const chunks = chunkArray(arr, chunkSize)
+
+    for (let i = 0; i < chunks.length; i++) {
+      const payload = bytesToBase64(chunks[i])
+
+      device.writeCharacteristicWithoutResponseForService(
+        serviceUUID,
+        charUUID,
+        payload
+      )
+
+      // ✅ เว้นทุกๆ 10 chunks กัน printer buffer overflow
+      if (i % 10 === 0) {
+        await new Promise(r => setTimeout(r, 1))
+      }
+    }
+  }
+
+
+  async function bleWriteBytesPlatform(
+    device: Device,
+    serviceUUID: string,
+    charUUID: string,
+    bytes: number[],
+  ) {
+
+    // Android ใช้ Logic ของ ฟังชั่น fast write จะปริ้นได้เร็วกว่า แต่ iOS จะเน้นความเสถียร
+    if (isAndroid) {
+      return bleWriteBytesFast(device, serviceUUID, charUUID, bytes)
+    }
+    return bleWriteBytes(device, serviceUUID, charUUID, bytes)
+  }
+
+
   const printPreviewImage = useCallback(async () => {
+
+    if (serviceUUID === '' || charUUID === '') return;
     if (!previewRef.current) return;
     setLoading(true);
     try {
+      console.log('✅ printPreviewImage')
+      if (!connectedInstantDevice) {
+        Alert.alert('Not Connected', 'Please connect to a device first.');
+        return;
+      }
 
       setTimeout(async () => {
 
@@ -300,30 +426,51 @@ export default function App() {
           result: 'tmpfile',
           width: 384,
         });
-
+        console.log('✅ captureRef')
 
         // ✅ แปลงเป็น ESC/POS bytes
-        const escposBytes = await convertImageUriToEscPosRasterBytes(uri, {
+        const imageBytes = await convertImageUriToEscPosRasterBytes(uri, {
           paperWidthDots: 384,
           threshold: 170,  // ปรับเข้ม/อ่อน
-          dither: true,    // ให้สวยขึ้น
         })
 
-         // ❌ ยังไม่พบวิธีสั่งปริ้นภาพผ่าน BLE
+        // ✅ 4) ส่งคำสั่ง init ก่อน (กันบางรุ่นไม่ปริ้น)
+        // await bleWriteBytesPlatform(connectedInstantDevice, serviceUUID, charUUID, [
+        //   0x1b, 0x40, // ESC @
+        // ]);
 
-        // console.log('✅ Print Image done')
-        // Alert.alert('Print Success', 'Image sent to printer.');
-      }, 1000);
+        // ✅ 5) ส่ง bytes รูปภาพจริง
+        await bleWriteBytesPlatform(connectedInstantDevice, serviceUUID, charUUID, Array.from(imageBytes));
+
+
+        // ✅ 6) feed paper
+        await bleWriteBytesPlatform(
+          connectedInstantDevice,
+          serviceUUID,
+          charUUID,
+          [0x1b, 0x64, isAndroid ? 0x04 : 0x03] // 0x03 = feed 3 lines , 1 line = 0x01
+        )
+        // ✅ 7) Partial Cut (ตัดกระดาษ เกือบขาด / เหลือหน่อย)
+        await bleWriteBytesPlatform(connectedInstantDevice, serviceUUID, charUUID, [0x1D, 0x56, 0x01])
+
+
+        console.log('✅ Print Image done')
+        Alert.alert('Print Success', 'Image sent to printer.');
+        setLoading(false);
+      }, 200);
 
     } catch (e) {
       console.error('Image print failed', e);
       Alert.alert('Print Failed', 'Could not print image.');
+      setLoading(false);
     }
-    setLoading(false);
-  }, [previewRef, connectedInstantDevice, allWritableChars, preferred]);
+
+  }, [previewRef, serviceUUID, charUUID, connectedInstantDevice]);
 
 
   const testPrint = useCallback(async () => {
+
+    if (serviceUUID === '' || charUUID === '') return;
     setLoading(true);
 
     try {
@@ -334,29 +481,27 @@ export default function App() {
         return;
       }
 
-      // ✅ เรียกตรงนี้!
-      const target = pickWriteTarget(allWritableChars, preferred)
+      const text = ('\n\nHELLO BLE PRINTER HELLO BLE PRINTER HELLO BLE PRINTER HELLO BLE PRINTER HELLO BLE PRINTER');
 
-      // แล้วค่อยเอา target ไปพิมพ์
-      const serviceUUID = target.serviceUUID
-      const charUUID = target.charUUID
-
-      const text = ('\n\nHELLO BLE PRINTER HELLO BLE PRINTER HELLO BLE PRINTER HELLO BLE PRINTER HELLO BLE PRINTER\n\n');
-
+      // ✅ print text
       await blePrintText(
         connectedInstantDevice,
         serviceUUID,
         charUUID,
         text);
 
-      const isDeli3582 = connectedInstantDevice.name?.includes('Printer_3582_BLE') || false;
-      // Feed extra lines for Deli 3582
-      isDeli3582 && await blePrintText(
+
+      // ✅ 6) feed paper
+      await bleWriteBytesPlatform(
         connectedInstantDevice,
         serviceUUID,
         charUUID,
-        '\n');
-      // -----------------------------------//
+        [0x1b, 0x64, isAndroid ? 0x04 : 0x03] // 0x03 = feed 3 lines , 1 line = 0x01
+      )
+
+      // ✅ 7) Partial Cut (ตัดกระดาษ เกือบขาด / เหลือหน่อย)
+      await bleWriteBytesPlatform(connectedInstantDevice, serviceUUID, charUUID, [0x1D, 0x56, 0x01])
+
 
       console.log('✅ Print Text done')
       Alert.alert('Print Success', 'Test print completed.');
@@ -368,7 +513,7 @@ export default function App() {
 
     setLoading(false);
 
-  }, [connectedInstantDevice, allWritableChars, preferred]);
+  }, [serviceUUID, charUUID, connectedInstantDevice]);
 
 
   useEffect(() => {
@@ -378,6 +523,15 @@ export default function App() {
       console.log("Permissions granted:", result);
     };
     init();
+
+    return () => {
+      setTimeout(async () => {
+        // Kill service when exit app
+        await disconnectDevice();
+        manager.destroy();
+      })
+    }
+
   }, []);
 
   // --- Functions (Unchanged) ---
@@ -400,7 +554,16 @@ export default function App() {
         if (!device) return
 
         // ✅ filter: เอาเฉพาะที่มีชื่อ (กันรก)
-        if (!device.name && !device.localName) return
+        const name = (device.name || device.localName || '').toLowerCase()
+        if (!name) return
+
+        const nameOk = PRINTER_NAME_KEYWORDS.some(k => name.includes(k))
+
+        const serviceOk = (device.serviceUUIDs || [])
+          .map(x => x.toLowerCase())
+          .some(u => PRINTER_SERVICE_UUIDS.includes(u))
+
+        if (!nameOk && !serviceOk) return
 
         // ✅ กันซ้ำด้วย id
         devicesMap.set(device.id, device)

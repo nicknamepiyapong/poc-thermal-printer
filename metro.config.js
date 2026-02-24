@@ -6,6 +6,14 @@ const {getDefaultConfig, mergeConfig} = require('@react-native/metro-config');
  *
  * @type {import('metro-config').MetroConfig}
  */
-const config = {};
+const config = {
+  resolver: {
+    extraNodeModules: {
+      events: require.resolve('events/'),
+      stream: require.resolve('readable-stream'),
+      inherits: require.resolve('inherits'),
+    },
+  },
+}
 
 module.exports = mergeConfig(getDefaultConfig(__dirname), config);
